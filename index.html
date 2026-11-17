@@ -3661,7 +3661,8 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     if (sending || isOver) return;
     var d = new Date();
     var day = copyDay(lastValid);
-    var no = receiptNoFor(day, d);
+    // v11 부스: 관객마다 다른 번호 (슬라이더 값이 같아도 겹치지 않게)
+    var no = BOOTH ? 'LF-' + yyyymmdd(d) + '-' + ('0000' + Math.floor(Math.random() * 0x10000).toString(16).toUpperCase()).slice(-4) : receiptNoFor(day, d);
     if (loadSent()[no]) { renderSend(); return; }
     var note = $('send-note');
     if (RECEIPTS_URL.indexOf('내프로젝트') !== -1) {
@@ -3672,7 +3673,7 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     var st = calc.summary(day);
     var message = clipMessage($('send-message').value);
     var memory = '';
-    if (BOOTH) { memory = message; message = ''; } // 부스에서는 이 칸이 '그 시간에 남은 것'
+    if (BOOTH) { memory = message; message = clipMessage($('booth-message').value); } // 부스: 이 칸 = '그 시간에 남은 것', 한마디는 교환소 아래 칸
     var receivedAt = fmtDateTime(d);
     var payload = {
       receiptNo: no,
@@ -3785,14 +3786,12 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
    *   웹사이트 = 설치의 입구와 출구. 해변(TouchDesigner)과는 Firebase 접수증의 stage 로 주고받는다.
    *   stored(보냄) → drift(물가에 병, TD) → dig(모래 속, TD) → opened(병 열림, TD) → refilled(교환, 여기) → stamped(도장, TD)
    * ================================================================ */
-  var BOOTH_POLL_MS = 1500, BOOTH_DONE_SEC = 30, BOOTH_IDLE_SEC = 180, BOOTH_LOST_SEC = 420, BOOTH_STAMP_WAIT_SEC = 240;
-  var BOOTH_FLOW = [['report', '신고'], ['ledger', '환산'], ['send', '흘려보내기'], ['beach', '해변'], ['exchange', '교환'], ['claim', '수령']];
-  var BOOTH_SECTIONS = { report: 'report', ledger: 'ledger', send: 'send', exchange: 'exchange' };
-  var booth = { step: null, key: null, no: null, seq: null, stage: '', stageT: 0, timer: null, pollSeq: 0,
-                doneAt: 0, touchT: 0, orig: {}, refilling: false, error: '' };
+  var BOOTH_DONE_SEC = 25, BOOTH_IDLE_SEC = 180;
+  var BOOTH_FLOW = [['report', '신고'], ['ledger', '환산'], ['exchange', '교환'], ['send', '접수'], ['done', '해변']];
+  var BOOTH_SECTIONS = { report: 'report', ledger: 'ledger', exchange: 'exchange', send: 'send' };
+  var booth = { step: null, no: null, doneAt: 0, touchT: 0, orig: {}, error: '' };
 
   function boothNow() { return Date.now(); }
-  function boothNoText() { return booth.seq ? 'No.' + ('00' + booth.seq).slice(-3) : (booth.no ? 'No.' + tagNo(booth.no) : ''); }
 
   function setupBooth() {
     if (!BOOTH) return;
@@ -3811,14 +3810,12 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     $('send-message').placeholder = '예: 고양이 영상 (없으면 비워 두세요)';
     var mlab = $('sr-message').previousElementSibling;
     if (mlab) mlab.textContent = '그 시간에 남은 것';
-    var acts = $('sr-actions');
-    [acts.previousElementSibling, acts, acts.nextElementSibling].forEach(function (el) { if (el) el.hidden = true; });
-    setHead('send', 'SEND', '이 시간을 해변으로', '보내면 해변 화면의 물가에 당신의 병이 나타납니다. 기억나는 것이 없어도 괜찮아요.');
+    setHead('send', 'SEND', '이 시간을 해변으로', '보내면 흘려보낸 시간이 바다를 건너 해변 모래 속에 묻힙니다. 기억나는 것이 없어도 괜찮아요.');
 
     // 교환소 아래: 이 병에 함께 담을 한마디
     var extra = h('div', 'booth-extra');
     extra.id = 'booth-extra';
-    var l2 = h('label', null, '이 병에 함께 담을 한마디 (선택)');
+    var l2 = h('label', null, '이 시간에 하고 싶은 말 (선택)');
     l2.setAttribute('for', 'booth-message');
     var in2 = document.createElement('input');
     in2.type = 'text'; in2.id = 'booth-message'; in2.maxLength = MESSAGE_MAX; in2.autocomplete = 'off';
@@ -3829,11 +3826,7 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     $('booth-next').addEventListener('click', guard('booth next', boothNext));
     $('booth-back').addEventListener('click', guard('booth back', boothBack));
     setInterval(guard('booth tick', boothTick), 1000);
-
-    // 새로고침해도 진행 중인 접수증이면 이어서
-    var cur = currentSent();
-    if (cur.rec && cur.rec.key && cur.rec.status !== 'found') { booth.no = cur.no; booth.key = cur.rec.key; boothStep('beach'); boothPoll(); }
-    else boothStep('report');
+    boothStep('report');
   }
 
   function setHead(secId, label, title, lede) {
@@ -3853,10 +3846,8 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     for (var i = 0; i < secs.length; i++) secs[i].classList.toggle('is-booth-on', secs[i].id === on);
     $('booth-stage').classList.toggle('is-on', !on);
     $('booth-extra').classList.toggle('is-on', id === 'exchange');
-    if (id === 'exchange') setHead('exchange', 'EXCHANGE', '병은 비어 있었습니다', '잃어버린 시간 한 칸을 골라, 내일 그 시간에 할 일로 바꿔 보세요. 고른 것이 금빛 모래가 되어 병에 담깁니다.');
-    if (id === 'claim') booth.doneAt = 0;
     try { window.scrollTo(0, 0); } catch (e) { /* 무시 */ }
-    if (id === 'ledger' || id === 'exchange' || id === 'send') update({ changed: null }); // 숨어 있던 링·숫자를 지금 크기로
+    if (on) update({ changed: null }); // 숨어 있던 링·숫자를 지금 크기로
     boothRender();
   }
 
@@ -3866,24 +3857,22 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
     var lis = $('booth-steps').children;
     for (var i = 0; i < lis.length; i++) { lis[i].classList.toggle('is-on', i === idx); lis[i].classList.toggle('is-done', i < idx); }
     var next = $('booth-next'), back = $('booth-back'), hint = $('booth-hint');
-    var st = calc.summary(lastValid);
     var nx = null, bk = null, ht = '', dis = false;
     if (booth.step === 'report') {
       nx = '1년이면? →'; dis = isOver;
       ht = isOver ? '합계를 24시간으로 맞춰 주세요' : '오늘 잃어버린 시간 ' + HM(calc.summary(state.hours).driftTotal);
     } else if (booth.step === 'ledger') {
-      nx = '접수증 쓰기 →'; bk = '← 다시 나누기'; ht = '오늘과 같은 하루가 계속된다면';
-    } else if (booth.step === 'send') {
-      bk = '← 환산'; ht = '아래 버튼을 누르면 해변 화면에 병이 나타나요';
-    } else if (booth.step === 'beach') {
-      ht = boothNoText() ? boothNoText() + ' · 해변 화면을 보세요' : '해변 화면을 보세요';
+      nx = '교환소로 →'; bk = '← 다시 나누기'; ht = '오늘과 같은 하루가 계속된다면';
     } else if (booth.step === 'exchange') {
       var n = exchangeList().length;
-      nx = booth.refilling ? '담는 중…' : (st.driftTotal > 0 ? '이 병에 담기' : '빈 병으로 두기');
-      dis = booth.refilling || (st.driftTotal > 0 && !n);
-      ht = n ? '고른 칸 ' + n + '개 · 다 고르지 않아도 돼요' : '주홍 칸이나 버튼을 눌러 바꿀 시간을 골라 주세요';
-    } else if (booth.step === 'claim') {
-      ht = booth.stage === 'stamped' ? '다음 분을 위해 곧 처음으로 돌아갑니다' : '해변 화면 옆 수령대를 보세요';
+      nx = '접수증 쓰기 →'; bk = '← 환산';
+      ht = n ? '고른 칸 ' + n + '개 · 다 고르지 않아도 돼요' : '바꾸고 싶은 시간을 골라 보세요 (안 골라도 돼요)';
+    } else if (booth.step === 'send') {
+      bk = '← 교환소'; ht = '아래 버튼을 누르면 해변으로 흘려보내져요';
+    } else if (booth.step === 'done') {
+      nx = '다음 분 →';
+      var left = Math.max(0, BOOTH_DONE_SEC - Math.round((boothNow() - booth.doneAt) / 1000));
+      ht = left + '초 뒤 처음 화면으로 돌아갑니다';
     }
     if (booth.error) ht = booth.error;
     hint.textContent = ht;
@@ -3894,138 +3883,54 @@ h1, h2, h3, h4, .section-title, .about-title, .ko-title, .intro-copy, .group-tit
   }
 
   function boothStage() {
-    var tag = $('booth-tag'), title = $('booth-title'), body = $('booth-body'), sub = $('booth-sub'), pulse = $('booth-pulse');
-    var tt = '', bd = '', sb = '', pl = true;
-    if (booth.step === 'beach') {
-      if (booth.stage === 'drift') {
-        tt = '당신의 병이 물가에 섰습니다';
-        bd = '화면 앞 모래 위에 손을 얹고, 모래를 화면 쪽으로 밀어 이 시간을 바다로 흘려보내세요.';
-      } else if (booth.stage === 'dig') {
-        tt = '파도가 병을 다시 데려왔어요';
-        bd = '흘려보낸 시간은 결국 해변에 닿습니다. 모래를 손으로 쓸어 당신의 병을 찾아보세요. 잃어버린 시간이 길수록 더 깊이 묻혀 있어요.';
-      } else {
-        tt = '접수되었습니다';
-        bd = '앞사람의 차례가 끝나면 해변 화면 물가에 당신의 병이 나타납니다.';
-      }
-      sb = '찾고 나면 이 화면에서 다음 단계가 이어집니다';
-    } else if (booth.step === 'claim') {
-      if (booth.stage === 'stamped') {
-        tt = '수령 완료';
-        bd = '해변 화면의 QR을 폰으로 찍어 수령증을 받아 가세요. 오늘의 24시간과 되찾은 시간이 담겨 있어요.';
-        pl = false;
-        var left = booth.doneAt ? Math.max(0, BOOTH_DONE_SEC - Math.round((boothNow() - booth.doneAt) / 1000)) : BOOTH_DONE_SEC;
-        sb = left + '초 뒤 처음 화면으로 돌아갑니다';
-      } else {
-        tt = '병에 금빛 모래가 차오릅니다';
-        bd = '화면 옆 수령대에 손을 얹어 이 병을 받아 가세요.';
-      }
+    var tag = $('booth-tag');
+    var done = booth.step === 'done';
+    $('booth-title').textContent = done ? '접수되었습니다' : '';
+    $('booth-body').textContent = done ? '이제 모래 상자로 가서 모래를 만져 보세요. 흘려보낸 시간이 바다를 건너 해변에 닿습니다. 모래 속에서 병을 찾으면 영수증이 나와요.' : '';
+    $('booth-sub').textContent = '';
+    $('booth-pulse').hidden = !done;
+    tag.hidden = !(done && booth.no);
+    if (done && booth.no) {
+      $('booth-tag-dot').style.background = ribbonFor(booth.no).color;
+      $('booth-tag-text').textContent = '접수번호 ' + booth.no;
     }
-    var no = boothNoText();
-    tag.hidden = !no || !(booth.step === 'beach' || booth.step === 'claim');
-    if (no && booth.no) { $('booth-tag-dot').style.background = ribbonFor(booth.no).color; $('booth-tag-text').textContent = '보관 번호 ' + no + ' · ' + ribbonFor(booth.no).name + ' 리본'; }
-    if (title.textContent !== tt) title.textContent = tt;
-    if (body.textContent !== bd) body.textContent = bd;
-    sub.textContent = sb;
-    pulse.hidden = !pl;
   }
 
   function boothNext() {
     if (booth.step === 'report') { if (!isOver) boothStep('ledger'); }
-    else if (booth.step === 'ledger') boothStep('send');
-    else if (booth.step === 'exchange') boothRefill();
+    else if (booth.step === 'ledger') boothStep('exchange');
+    else if (booth.step === 'exchange') boothStep('send');
+    else if (booth.step === 'done') boothReset('다음 분');
   }
   function boothBack() {
     if (booth.step === 'ledger') boothStep('report');
-    else if (booth.step === 'send') boothStep('ledger');
+    else if (booth.step === 'exchange') boothStep('ledger');
+    else if (booth.step === 'send') boothStep('exchange');
   }
 
   function boothSent(no, key) {
-    booth.no = no; booth.key = key; booth.stage = 'stored'; booth.stageT = boothNow(); booth.seq = null;
-    boothStep('beach');
-    if (key) boothPoll();
-    else { booth.error = '보관소 키를 받지 못했습니다. 진행 요원에게 알려 주세요.'; boothRender(); }
-  }
-
-  function boothStopPoll() { if (booth.timer) clearTimeout(booth.timer); booth.timer = null; booth.pollSeq++; }
-  function boothPoll() {
-    boothStopPoll();
-    var seq = booth.pollSeq;
-    function tick() {
-      booth.timer = null;
-      if (!booth.key || seq !== booth.pollSeq) return;
-      fetch(RECEIPTS_BASE + '/' + encodeURIComponent(booth.key) + '.json', { cache: 'no-store' }).then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      }).then(function (data) {
-        if (seq !== booth.pollSeq) return;
-        if (data) boothOnData(data);
-        booth.timer = setTimeout(tick, BOOTH_POLL_MS);
-      }).catch(function (e) {
-        if (seq !== booth.pollSeq) return;
-        warn('부스 확인 실패', e);
-        booth.timer = setTimeout(tick, BOOTH_POLL_MS * 2);
-      });
-    }
-    tick();
-  }
-
-  function boothOnData(data) {
-    if (data.seq) booth.seq = parseInt(data.seq, 10) || booth.seq;
-    var stage = String(data.stage || (data.status === 'found' ? 'stamped' : 'stored'));
-    if (data.status === 'found' && stage !== 'stamped') stage = 'stamped';
-    if (stage !== booth.stage) { booth.stage = stage; booth.stageT = boothNow(); }
-    if (stage === 'opened' && (booth.step === 'beach')) { boothStep('exchange'); return; }
-    if (stage === 'stamped' && booth.step !== 'claim') boothStep('claim');
-    if (stage === 'stamped' && !booth.doneAt) booth.doneAt = boothNow();
-    boothRender();
-  }
-
-  function boothRefill() {
-    if (booth.refilling || !booth.key) return;
-    booth.refilling = true;
-    booth.error = '';
-    boothRender();
-    var body = {
-      stage: 'refilled', refilledAt: boothNow(),
-      exchanges: exchangeList(), reclaimed: calc.cleanReclaimed(state.reclaimed, lastValid),
-      message: clipMessage($('booth-message').value)
-    };
-    fetch(RECEIPTS_BASE + '/' + encodeURIComponent(booth.key) + '.json', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-    }).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      booth.refilling = false;
-      booth.stage = 'refilled'; booth.stageT = boothNow();
-      boothStep('claim');
-    }).catch(function (e) {
-      warn('교환 보내기 실패', e);
-      booth.refilling = false;
-      booth.error = '보내지 못했어요. 다시 눌러 주세요.';
-      boothRender();
-    });
+    booth.no = no;
+    booth.doneAt = boothNow();
+    if (!key) booth.error = '보관소에 닿았는지 확인하지 못했어요. 진행 요원에게 알려 주세요.';
+    boothStep('done');
   }
 
   function boothTick() {
     if (!booth.step) return;
-    var t = boothNow(), idle = (t - (booth.touchT || t)) / 1000, since = (t - (booth.stageT || t)) / 1000;
+    var t = boothNow(), idle = (t - (booth.touchT || t)) / 1000;
     var s = booth.step;
-    if ((s === 'ledger' || s === 'send') && idle > BOOTH_IDLE_SEC && !sending) return boothReset('입력 없음');
+    if (s === 'done') { if (t - booth.doneAt > BOOTH_DONE_SEC * 1000) return boothReset('접수 완료'); return boothRender(); }
+    if ((s === 'ledger' || s === 'exchange' || s === 'send') && idle > BOOTH_IDLE_SEC && !sending) return boothReset('입력 없음');
     if (s === 'report' && idle > BOOTH_IDLE_SEC && calc.hashDay(state.hours) !== calc.hashDay(calc.defaultDay())) return boothReset('입력 없음');
-    if (s === 'beach' && since > BOOTH_LOST_SEC) return boothReset('해변 진행 없음');
-    if (s === 'exchange' && idle > BOOTH_IDLE_SEC + 120) return boothReset('교환 없음');
-    if (s === 'claim' && booth.stage !== 'stamped' && since > BOOTH_STAMP_WAIT_SEC) return boothReset('수령 없음');
-    if (s === 'claim' && booth.doneAt && t - booth.doneAt > BOOTH_DONE_SEC * 1000) return boothReset('수령 완료');
     boothRender();
   }
 
   function boothReset(why) {
     warn('부스 처음으로: ' + why);
-    boothStopPoll();
-    booth.key = null; booth.no = null; booth.seq = null; booth.stage = ''; booth.doneAt = 0; booth.refilling = false;
+    booth.no = null; booth.doneAt = 0;
     sending = false;
     newReceipt();
     $('booth-message').value = '';
-    setHead('exchange', null);
     boothStep('report');
   }
 
